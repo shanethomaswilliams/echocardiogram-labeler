@@ -1,6 +1,11 @@
-fastapi
-uvicorn
-pydicom
-numpy
-pillow
-python-multipart
+fastapi>=0.104.0
+uvicorn>=0.23.2
+pydantic>=2.4.2
+pydicom>=2.4.3
+numpy>=1.24.0
+pillow>=10.0.0
+opencv-python>=4.8.0
+python-multipart>=0.0.6
+starlette>=0.27.0
+typing-extensions>=4.8.0
+aiofiles>=23.2.1
