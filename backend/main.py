@@ -4,6 +4,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Dict
 import os, re, csv, io, base64, copy
+import json
+import random
 import pydicom
 import numpy as np
 from PIL import Image
@@ -49,6 +51,7 @@ class PatientDicomsRequest(BaseModel):
 # ----- Helper Functions -----
 MAIN_CSV_FILE_PATH = "patient_dicom_labels.csv"
 ACCOUNTS_CSV_PATH = "user_accounts.csv"
+PATIENT_MAPPING_FILE = "patient_mapping.json"
 
 def get_user_csv_path(username: str):
     """Get the CSV file path for a specific user"""
@@ -94,126 +97,6 @@ def save_account(username: str):
     
     return True
 
-def convert_frame_to_base64(frame: np.ndarray) -> str:
-    if frame.max() > 0:
-        normalized_frame = ((frame / frame.max()) * 255).astype(np.uint8)
-    else:
-        normalized_frame = frame.astype(np.uint8)
-    image = Image.fromarray(normalized_frame).convert("L")
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode('utf-8')}"
-
-def extract_patient_number(name: str) -> int:
-    match = re.search(r'\d+', name)
-    return int(match.group()) if match else float('inf')
-
-def save_to_csv(patients_data: List[Dict], csv_path: str):
-    """Save patients data to a specific CSV file path"""
-    headers = ["patientName", "dicomName", "label", "filepath", "frameCount", "source"]
-    patients_data_sorted = sorted(patients_data, key=lambda x: extract_patient_number(x["patientName"]))
-    
-    # Ensure directory exists if the csv_path includes a directory
-    dirname = os.path.dirname(csv_path)
-    if dirname:  # Only create directories if there's actually a directory part
-        os.makedirs(dirname, exist_ok=True)
-    
-    with open(csv_path, 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(headers)
-        for patient in patients_data_sorted:
-            for dicom in patient["dicoms"]:
-                writer.writerow([
-                    patient["patientName"],
-                    dicom["dicomName"],
-                    dicom.get("label", 0),
-                    dicom.get("filepath", ""),
-                    dicom.get("frameCount", 0),
-                    dicom.get("source", "")  # Include source in CSV
-                ])
-    print(f"Data saved to {csv_path}")
-
-def load_from_csv(csv_path: str):
-    """Load patients data from a specific CSV file path"""
-    if not os.path.exists(csv_path):
-        print(f"CSV file {csv_path} not found")
-        return []
-    patients = {}
-    with open(csv_path, 'r', newline='') as csvfile:
-        reader = csv.reader(csvfile)
-        headers = next(reader)
-        for row in reader:
-            if len(row) < 3:
-                print(f"Skipping malformed row: {row}")
-                continue
-            patient_name, dicom_name, label_str = row[0], row[1], row[2]
-            filepath = row[3] if len(row) > 3 else ""
-            try:
-                frame_count = int(row[4]) if len(row) > 4 and row[4].isdigit() else 0
-            except:
-                frame_count = 0
-            source = row[5] if len(row) > 5 else ""
-            
-            if patient_name not in patients:
-                patients[patient_name] = {"patientName": patient_name, "dicoms": []}
-            patients[patient_name]["dicoms"].append({
-                "dicomName": dicom_name,
-                "label": int(label_str),
-                "filepath": filepath,
-                "frameCount": frame_count,
-                "source": source
-            })
-    patient_list = list(patients.values())
-    print(f"Loaded {len(patient_list)} patients from CSV: {csv_path}")
-    return patient_list
-
-def update_csv_with_label(patient_name: str, dicom_name: str, label: int, csv_path: str):
-    """Update a specific CSV with the given label"""
-    if not os.path.exists(csv_path):
-        patients_data = [{
-            "patientName": patient_name,
-            "dicoms": [{
-                "dicomName": dicom_name,
-                "label": label,
-                "filepath": "",
-                "frameCount": 0,
-                "source": ""
-            }]
-        }]
-        save_to_csv(patients_data, csv_path)
-        return True
-    
-    rows = []
-    found = False
-    with open(csv_path, 'r', newline='') as csvfile:
-        reader = csv.reader(csvfile)
-        headers = next(reader)
-        rows.append(headers)
-        for row in reader:
-            if len(row) < 3:
-                rows.append(row)
-                continue
-            if row[0] == patient_name and row[1] == dicom_name:
-                row[2] = str(label)
-                found = True
-            rows.append(row)
-    
-    if not found:
-        # If adding a new row, include empty source field
-        if len(headers) > 5 and headers[5] == "source":
-            rows.append([patient_name, dicom_name, str(label), "", "0", ""])
-        else:
-            rows.append([patient_name, dicom_name, str(label), "", "0"])
-    
-    with open(csv_path, 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        for row in rows:
-            writer.writerow(row)
-    
-    print(f"Updated CSV {csv_path} for {patient_name}/{dicom_name} with label {label}")
-    return True
-
-# Helper function to convert various frame formats to base64
 def convert_frame_to_base64(frame):
     """Convert a frame (numpy array) to base64 encoded image string"""
     # Ensure frame is in the right format for OpenCV
@@ -236,6 +119,192 @@ def convert_frame_to_base64(frame):
         return f"data:image/jpeg;base64,{image_data}"
     else:
         raise ValueError("Frame is not a numpy array")
+
+def extract_patient_number(name: str) -> int:
+    match = re.search(r'\d+', name)
+    return int(match.group()) if match else float('inf')
+
+def get_or_create_patient_mapping(patients_by_source):
+    """
+    Creates or loads a mapping from source patient names to sequential IDs.
+    
+    Args:
+        patients_by_source: Dictionary where keys are source keys (source:original_name)
+                           and values are patient data
+    
+    Returns:
+        Dictionary mapping source keys to new sequential patient IDs
+    """
+    if os.path.exists(PATIENT_MAPPING_FILE):
+        # Load existing mapping if it exists
+        try:
+            with open(PATIENT_MAPPING_FILE, 'r') as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            print(f"Error decoding {PATIENT_MAPPING_FILE}, creating new mapping")
+    
+    # Create a new mapping with randomized order
+    unique_patients = list(patients_by_source.keys())
+    # Shuffle the list to randomize order
+    random.shuffle(unique_patients)
+    
+    # Create sequential mapping (Patient 1, Patient 2, etc.)
+    mapping = {}
+    for i, patient_key in enumerate(unique_patients):
+        # Use 1-indexed patient numbers for better UX
+        new_patient_id = f"Patient {i+1}"
+        mapping[patient_key] = new_patient_id
+    
+    # Save the mapping for future use
+    with open(PATIENT_MAPPING_FILE, 'w') as f:
+        json.dump(mapping, f)
+    
+    return mapping
+
+def save_to_csv(patients_data: List[Dict], csv_path: str):
+    """Save patients data to a specific CSV file path"""
+    headers = ["patientName", "originalName", "source", "dicomName", "label", "filepath", "frameCount", "originalPatientName"]
+    
+    # Ensure directory exists if the csv_path includes a directory
+    dirname = os.path.dirname(csv_path)
+    if dirname:  # Only create directories if there's actually a directory part
+        os.makedirs(dirname, exist_ok=True)
+    
+    with open(csv_path, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(headers)
+        for patient in patients_data:
+            for dicom in patient["dicoms"]:
+                writer.writerow([
+                    patient["patientName"],
+                    patient.get("originalName", ""),
+                    patient.get("source", ""),
+                    dicom["dicomName"],
+                    dicom.get("label", 0),
+                    dicom.get("filepath", ""),
+                    dicom.get("frameCount", 0),
+                    dicom.get("originalPatientName", "")
+                ])
+    print(f"Data saved to {csv_path}")
+
+def load_from_csv(csv_path: str):
+    """Load patients data from a specific CSV file path"""
+    if not os.path.exists(csv_path):
+        print(f"CSV file {csv_path} not found")
+        return []
+    patients = {}
+    with open(csv_path, 'r', newline='') as csvfile:
+        reader = csv.reader(csvfile)
+        headers = next(reader)
+        
+        # Determine column indices based on headers
+        patient_name_idx = headers.index("patientName") if "patientName" in headers else 0
+        dicom_name_idx = headers.index("dicomName") if "dicomName" in headers else 1
+        label_idx = headers.index("label") if "label" in headers else 2
+        filepath_idx = headers.index("filepath") if "filepath" in headers else 3
+        frame_count_idx = headers.index("frameCount") if "frameCount" in headers else 4
+        source_idx = headers.index("source") if "source" in headers else -1
+        original_name_idx = headers.index("originalName") if "originalName" in headers else -1
+        original_patient_name_idx = headers.index("originalPatientName") if "originalPatientName" in headers else -1
+        
+        for row in reader:
+            if len(row) <= max(patient_name_idx, dicom_name_idx, label_idx):
+                print(f"Skipping malformed row: {row}")
+                continue
+            
+            patient_name = row[patient_name_idx]
+            dicom_name = row[dicom_name_idx]
+            label_str = row[label_idx]
+            
+            # Get optional fields if they exist
+            filepath = row[filepath_idx] if filepath_idx >= 0 and filepath_idx < len(row) else ""
+            
+            try:
+                frame_count = int(row[frame_count_idx]) if frame_count_idx >= 0 and frame_count_idx < len(row) and row[frame_count_idx].isdigit() else 0
+            except:
+                frame_count = 0
+                
+            source = row[source_idx] if source_idx >= 0 and source_idx < len(row) else ""
+            original_name = row[original_name_idx] if original_name_idx >= 0 and original_name_idx < len(row) else ""
+            original_patient_name = row[original_patient_name_idx] if original_patient_name_idx >= 0 and original_patient_name_idx < len(row) else ""
+            
+            if patient_name not in patients:
+                patients[patient_name] = {
+                    "patientName": patient_name,
+                    "originalName": original_name,
+                    "source": source,
+                    "dicoms": []
+                }
+                
+            patients[patient_name]["dicoms"].append({
+                "dicomName": dicom_name,
+                "label": int(label_str),
+                "filepath": filepath,
+                "frameCount": frame_count,
+                "source": source,
+                "originalPatientName": original_patient_name
+            })
+            
+    patient_list = list(patients.values())
+    print(f"Loaded {len(patient_list)} patients from CSV: {csv_path}")
+    return patient_list
+
+def update_csv_with_label(patient_name: str, dicom_name: str, label: int, csv_path: str):
+    """Update a specific CSV with the given label"""
+    if not os.path.exists(csv_path):
+        patients_data = [{
+            "patientName": patient_name,
+            "originalName": "",
+            "source": "",
+            "dicoms": [{
+                "dicomName": dicom_name,
+                "label": label,
+                "filepath": "",
+                "frameCount": 0,
+                "originalPatientName": ""
+            }]
+        }]
+        save_to_csv(patients_data, csv_path)
+        return True
+    
+    rows = []
+    found = False
+    with open(csv_path, 'r', newline='') as csvfile:
+        reader = csv.reader(csvfile)
+        headers = next(reader)
+        rows.append(headers)
+        
+        # Determine column indices
+        patient_name_idx = headers.index("patientName") if "patientName" in headers else 0
+        dicom_name_idx = headers.index("dicomName") if "dicomName" in headers else 1
+        label_idx = headers.index("label") if "label" in headers else 2
+        
+        for row in reader:
+            if len(row) <= max(patient_name_idx, dicom_name_idx, label_idx):
+                rows.append(row)
+                continue
+                
+            if row[patient_name_idx] == patient_name and row[dicom_name_idx] == dicom_name:
+                row[label_idx] = str(label)
+                found = True
+                
+            rows.append(row)
+    
+    if not found:
+        # If adding a new row, include empty fields for new columns
+        new_row = [""] * len(headers)
+        new_row[patient_name_idx] = patient_name
+        new_row[dicom_name_idx] = dicom_name
+        new_row[label_idx] = str(label)
+        rows.append(new_row)
+    
+    with open(csv_path, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        for row in rows:
+            writer.writerow(row)
+    
+    print(f"Updated CSV {csv_path} for {patient_name}/{dicom_name} with label {label}")
+    return True
 
 @app.post("/scan-directory")
 async def scan_directory(request: ScanDirectoryRequest):
@@ -275,8 +344,8 @@ async def scan_directory(request: ScanDirectoryRequest):
         for dicom in patient["dicoms"]:
             user_patient_dict[patient["patientName"]]["dicoms"][dicom["dicomName"]] = dicom
     
-    # Process both directories and merge results
-    patients = {}
+    # Process both directories and collect patients by source
+    patients_by_source = {}
     
     # Helper function to process a directory
     def process_directory(directory_path, source):
@@ -291,20 +360,28 @@ async def scan_directory(request: ScanDirectoryRequest):
                 parts = rel_path.split(os.sep)
                 if not parts:
                     continue
-                patientName = parts[0]
+                
+                # The original patient name from the directory
+                original_patient_name = parts[0]
                 filepath = os.path.join(root, file)
                 dicomName = file
-                print(f"Found potential DICOM: {patientName}/{dicomName} (source: {source})")
                 
-                if patientName not in patients:
-                    patients[patientName] = {"patientName": patientName, "dicoms": {}}
+                # Create a unique key combining source and original name
+                # This ensures patients with same name from different sources are treated separately
+                patient_key = f"{source}:{original_patient_name}"
+                
+                print(f"Found potential DICOM: {original_patient_name}/{dicomName} (source: {source})")
+                
+                if patient_key not in patients_by_source:
+                    patients_by_source[patient_key] = {
+                        "originalName": original_patient_name,
+                        "source": source,
+                        "dicoms": {}
+                    }
                 
                 # Check for existing label only in user's CSV
+                # This is trickier now with the mapping - we'll handle it after mapping
                 label = 0
-                if patientName in user_patient_dict and dicomName in user_patient_dict[patientName]["dicoms"]:
-                    # Use user's label if available
-                    label = user_patient_dict[patientName]["dicoms"][dicomName].get("label", 0)
-                    print(f"Found existing user label for {patientName}/{dicomName}: {label}")
                 
                 frame_count = 0
                 try:
@@ -319,12 +396,13 @@ async def scan_directory(request: ScanDirectoryRequest):
                     continue
                 
                 # Store with source information
-                patients[patientName]["dicoms"][dicomName] = {
+                patients_by_source[patient_key]["dicoms"][dicomName] = {
                     "dicomName": dicomName,
                     "label": label,
                     "filepath": filepath,
                     "frameCount": frame_count,
-                    "source": source  # Track the source
+                    "source": source,
+                    "originalPatientName": original_patient_name  # Store original name
                 }
     
     # Process both directories
@@ -333,16 +411,65 @@ async def scan_directory(request: ScanDirectoryRequest):
     if vave_path:
         process_directory(vave_path, "vave")
     
+    # Get or create the mapping from source patients to sequential IDs
+    patient_mapping = get_or_create_patient_mapping(patients_by_source)
+    
+    # Create a new structure with mapped patient names
+    patients = {}
+    
+    # Create patient entry for each mapped patient
+    for source_key, patient_data in patients_by_source.items():
+        if source_key in patient_mapping:
+            new_patient_name = patient_mapping[source_key]
+            original_name = patient_data["originalName"]
+            source = patient_data["source"]
+            
+            if new_patient_name not in patients:
+                patients[new_patient_name] = {
+                    "patientName": new_patient_name,
+                    "originalName": original_name,
+                    "source": source,
+                    "dicoms": {}
+                }
+            
+            # Add all DICOMs from this source patient
+            for dicom_name, dicom_data in patient_data["dicoms"].items():
+                # Check if this DICOM already has a label in the user's CSV
+                label = 0
+                original_name = dicom_data["originalPatientName"]
+                
+                # Complex lookup: try to find this DICOM in the user's CSV
+                # We need to match both the original patient name and the DICOM name
+                for user_patient_name, user_patient in user_patient_dict.items():
+                    for user_dicom_name, user_dicom in user_patient["dicoms"].items():
+                        if (user_dicom.get("originalPatientName") == original_name and 
+                            user_dicom_name == dicom_name and
+                            user_dicom.get("source") == source):
+                            label = user_dicom.get("label", 0)
+                            print(f"Found existing user label for {original_name}/{dicom_name} (source: {source}): {label}")
+                            break
+                
+                # Update the label and add to the new patients dictionary
+                dicom_data["label"] = label
+                patients[new_patient_name]["dicoms"][dicom_name] = dicom_data
+    
     # Convert to list format for the response
     patient_list = []
     for patient_name, data in patients.items():
         patient_list.append({
             "patientName": patient_name,
+            "originalName": data.get("originalName", ""),
+            "source": data.get("source", ""),
             "dicoms": list(data["dicoms"].values())
         })
 
-    # Sort the patient list before saving to CSV and returning response
-    patient_list_sorted = sorted(patient_list, key=lambda x: extract_patient_number(x["patientName"]))
+    # Sort the patient list - now we sort by the new sequential IDs
+    def extract_patient_number_from_mapped(patient):
+        # Extract number from "Patient X" format
+        match = re.search(r'\d+', patient["patientName"])
+        return int(match.group()) if match else float('inf')
+    
+    patient_list_sorted = sorted(patient_list, key=extract_patient_number_from_mapped)
 
     # Save to main CSV (structure with filepath info) - this serves as the template for new users
     save_to_csv(patient_list_sorted, MAIN_CSV_FILE_PATH)
@@ -513,10 +640,14 @@ async def reset_csv(username: str = None, delete_all: bool = False):
         user_csv_path = get_user_csv_path(username)
         
         if delete_all:
-            # Delete main CSV and user accounts if requested
+            # Delete main CSV, patient mapping, and user accounts if requested
             if os.path.exists(MAIN_CSV_FILE_PATH):
                 os.remove(MAIN_CSV_FILE_PATH)
                 print(f"Deleted main CSV file: {MAIN_CSV_FILE_PATH}")
+            
+            if os.path.exists(PATIENT_MAPPING_FILE):
+                os.remove(PATIENT_MAPPING_FILE)
+                print(f"Deleted patient mapping file: {PATIENT_MAPPING_FILE}")
             
             if os.path.exists(ACCOUNTS_CSV_PATH):
                 os.remove(ACCOUNTS_CSV_PATH)
