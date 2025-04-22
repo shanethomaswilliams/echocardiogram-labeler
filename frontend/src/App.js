@@ -546,6 +546,87 @@ function App() {
     // Explicitly check each dicom's label value, not using reference equality
     return patient.dicoms.every(dicom => dicom.label > 0);
   };
+
+  const moveToPreviousDicom = () => {
+    if (!currentPatient || buttonsDisabled) return false;
+    
+    // If we're not at the first DICOM of the current patient, just move to the previous DICOM
+    if (selectedDicomIndex > 0) {
+      setSelectedDicomIndex(prev => prev - 1);
+      setCurrentImageIndex(0);
+      
+      // Only set lastSelectedLabel if the DICOM exists
+      if (currentPatient.dicoms[selectedDicomIndex - 1]) {
+        setLastSelectedLabel(currentPatient.dicoms[selectedDicomIndex - 1].label || null);
+      }
+      
+      return true;
+    }
+    
+    // If we're at the first DICOM of the current patient, move to the previous patient
+    if (patientsList) {
+      const currentPatientIndex = patientsList.findIndex(p => p.patientName === currentPatient.patientName);
+      
+      if (currentPatientIndex > 0) {
+        const prevPatient = patientsList[currentPatientIndex - 1];
+        
+        if (prevPatient.dicoms && prevPatient.dicoms.length > 0) {
+          // There are DICOMs in the previous patient
+          // Get the name of the last DICOM
+          const lastDicomName = prevPatient.dicoms[prevPatient.dicoms.length - 1].dicomName;
+          
+          // Load the previous patient's DICOMs, starting with the last one
+          fetchPatientDicoms(prevPatient.patientName, lastDicomName);
+          return true;
+        } else {
+          // Previous patient has no DICOMs, just load it
+          fetchPatientDicoms(prevPatient.patientName);
+          return true;
+        }
+      }
+    }
+    
+    return false;
+  };
+  
+  // For moving to the next DICOM in sequential order
+  const moveToNextDicom = () => {
+    if (!currentPatient || buttonsDisabled) return false;
+    
+    // If we're not at the last DICOM of the current patient, just move to the next DICOM
+    if (selectedDicomIndex < currentPatient.dicoms.length - 1) {
+      setSelectedDicomIndex(prev => prev + 1);
+      setCurrentImageIndex(0);
+      
+      // Only set lastSelectedLabel if the DICOM exists
+      if (currentPatient.dicoms[selectedDicomIndex + 1]) {
+        setLastSelectedLabel(currentPatient.dicoms[selectedDicomIndex + 1].label || null);
+      }
+      
+      return true;
+    }
+    
+    // If we're at the last DICOM of the current patient, move to the next patient
+    if (patientsList) {
+      const currentPatientIndex = patientsList.findIndex(p => p.patientName === currentPatient.patientName);
+      
+      if (currentPatientIndex < patientsList.length - 1) {
+        const nextPatient = patientsList[currentPatientIndex + 1];
+        
+        if (nextPatient.dicoms && nextPatient.dicoms.length > 0) {
+          // Load the next patient's DICOMs, starting with the first one (the default behavior)
+          fetchPatientDicoms(nextPatient.patientName);
+          return true;
+        } else {
+          // Next patient has no DICOMs, just load it
+          fetchPatientDicoms(nextPatient.patientName);
+          return true;
+        }
+      }
+    }
+    
+    return false;
+  };
   
   const getTotalLabeledCount = () => {
     if (!patientsList) return 0;
@@ -1602,25 +1683,24 @@ function App() {
       
       console.log("Key pressed:", e.key);
       console.log("Keycode pressed: ", e.keyCode);
-
+  
       if (['1','2','3','4','5'].includes(e.key)) {
         handleLabel(e.key);
       } else if (e.keyCode === 8) {
         undoLabel();
       } else if (e.keyCode === 37) {
-        setCurrentImageIndex(prev => Math.max(0, prev - 1));
+        // Left arrow - Move to previous DICOM
+        moveToPreviousDicom();
       } else if (e.keyCode === 39) {
-        const dicom = currentPatient?.dicoms?.[selectedDicomIndex];
-        if (dicom?.images) {
-          setCurrentImageIndex(prev => Math.min(dicom.images.length - 1, prev + 1));
-        }
+        // Right arrow - Move to next DICOM
+        moveToNextDicom();
       }
     };
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
     // eslint-disable-next-line
-  }, [buttonsDisabled, showCompletionModal, currentPatient, selectedDicomIndex, currentImageIndex]);
+  }, [buttonsDisabled, showCompletionModal, currentPatient, selectedDicomIndex, patientsList]);
 
   useEffect(() => {
     if (patientsList) {
@@ -1916,7 +1996,7 @@ function App() {
             <ul>
               <li>Keys <kbd>1</kbd>-<kbd>5</kbd>: Label current DICOM</li>
               <li><kbd>Backspace</kbd>: Undo last label</li>
-              <li><kbd>←</kbd>/<kbd>→</kbd>: Navigate through images</li>
+              <li><kbd>←</kbd>/<kbd>→</kbd>: Navigate between DICOMs</li>
               <li><kbd>Space</kbd>: Play/pause DICOM playback</li>
             </ul>
           </div>
