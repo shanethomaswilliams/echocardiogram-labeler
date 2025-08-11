@@ -17,6 +17,7 @@ class DicomQueueManager {
     this.processApiResponse(apiResponse);
   }
 
+
   processApiResponse(apiResponse) {
     for (const patient of apiResponse.patients) {
       const patientName = patient.patientName;
@@ -451,6 +452,7 @@ function App() {
   const [initialLoading, setInitialLoading] = useState(true);
   const [butterflyDirectoryPath, setButterflyDirectoryPath] = useState('');
   const [vaveDirectoryPath, setVaveDirectoryPath] = useState('');
+  const [vave2DirectoryPath, setVave2DirectoryPath] = useState('');
   const [hasShownCompletionModal, setHasShownCompletionModal] = useState(false);
   const [labelActionStack, setLabelActionStack] = useState([]);
   const [showUndoOverlay, setShowUndoOverlay] = useState(false);
@@ -482,6 +484,7 @@ function App() {
     setCurrentPatient(null);
     setButterflyDirectoryPath('');
     setVaveDirectoryPath('');
+    setVave2DirectoryPath('');
     
     // Reset all UI state
     setSelectedDicomIndex(0);
@@ -777,6 +780,7 @@ function App() {
       setCurrentPatient(null);
       setButterflyDirectoryPath('');
       setVaveDirectoryPath('');
+      setVave2DirectoryPath('');
       setSelectedDicomIndex(0);
       setCurrentImageIndex(0);
       setOverlay('');
@@ -834,7 +838,7 @@ function App() {
   };
 
   const handleScanDirectory = async () => {
-    if (!butterflyDirectoryPath && !vaveDirectoryPath) {
+    if (!butterflyDirectoryPath && !vaveDirectoryPath && !vave2DirectoryPath) {
       alert("Please enter at least one directory path");
       return;
     }
@@ -865,6 +869,7 @@ function App() {
       const response = await axios.post(`${API_URL}/scan-directory`, {
         butterfly_directory_path: butterflyDirectoryPath,
         vave_directory_path: vaveDirectoryPath,
+        vave_2_directory_path: vave2DirectoryPath,
         username: currentUser
       });
 
@@ -1819,10 +1824,21 @@ function App() {
                     className="directory-path-input"
                   />
                 </div>
+                <div className="directory-input">
+                  <label htmlFor="vave-2-directory-path">Second Vave DICOM Directory Path:</label>
+                  <input
+                    id="vave-2-directory-path"
+                    type="text"
+                    value={vave2DirectoryPath}
+                    onChange={(e) => setVave2DirectoryPath(e.target.value)}
+                    placeholder="e.g., C:\path\to\second\vave_DICOM_folder"
+                    className="directory-path-input"
+                  />
+                </div>
                 <button 
                   className="scan-button"
                   onClick={handleScanDirectory}
-                  disabled={loading || (!butterflyDirectoryPath && !vaveDirectoryPath)}
+                  disabled={loading || (!butterflyDirectoryPath && !vaveDirectoryPath && !vave2DirectoryPath)}
                 >
                   Scan Directories
                 </button>

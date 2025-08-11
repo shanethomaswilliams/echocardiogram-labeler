@@ -36,6 +36,7 @@ class LoginRequest(BaseModel):
 class ScanDirectoryRequest(BaseModel):
     butterfly_directory_path: str = ""
     vave_directory_path: str = ""
+    vave_2_directory_path: str = ""
     username: str
 
 class UpdateRequest(BaseModel):
@@ -319,16 +320,18 @@ async def scan_directory(request: ScanDirectoryRequest):
     
     butterfly_path = request.butterfly_directory_path
     vave_path = request.vave_directory_path
+    vave_path_2 = request.vave_2_directory_path 
     
     print(f"Scanning Butterfly directory: {butterfly_path}")
     print(f"Scanning Vave directory: {vave_path}")
+    print(f"Scanning Vave 2 directory: {vave_path_2}")
     
     # Ensure at least one path is provided
-    if not butterfly_path and not vave_path:
+    if not butterfly_path and not vave_path and not vave_path_2:
         raise HTTPException(status_code=400, detail="At least one directory path must be provided")
     
     # Validate paths
-    for path, source in [(butterfly_path, "butterfly"), (vave_path, "vave")]:
+    for path, source in [(butterfly_path, "butterfly"), (vave_path, "vave"), (vave_path_2, "vave_2")]:
         if path and not os.path.exists(path):
             raise HTTPException(status_code=404, detail=f"{source.capitalize()} directory not found: {path}")
         if path and not os.path.isdir(path):
@@ -410,6 +413,8 @@ async def scan_directory(request: ScanDirectoryRequest):
         process_directory(butterfly_path, "butterfly")
     if vave_path:
         process_directory(vave_path, "vave")
+    if vave_path_2:
+        process_directory(vave_path_2, "vave_2")
     
     # Get or create the mapping from source patients to sequential IDs
     patient_mapping = get_or_create_patient_mapping(patients_by_source)
