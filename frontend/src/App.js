@@ -451,8 +451,8 @@ function App() {
   const [loadingImages, setLoadingImages] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [butterflyDirectoryPath, setButterflyDirectoryPath] = useState('');
+  const [butterfly2DirectoryPath, setButterfly2DirectoryPath] = useState('');
   const [vaveDirectoryPath, setVaveDirectoryPath] = useState('');
-  const [vave2DirectoryPath, setVave2DirectoryPath] = useState('');
   const [hasShownCompletionModal, setHasShownCompletionModal] = useState(false);
   const [labelActionStack, setLabelActionStack] = useState([]);
   const [showUndoOverlay, setShowUndoOverlay] = useState(false);
@@ -483,8 +483,8 @@ function App() {
     setPatientsList(null);
     setCurrentPatient(null);
     setButterflyDirectoryPath('');
+    setButterfly2DirectoryPath('');
     setVaveDirectoryPath('');
-    setVave2DirectoryPath('');
     
     // Reset all UI state
     setSelectedDicomIndex(0);
@@ -779,8 +779,8 @@ function App() {
       setPatientsList(null);
       setCurrentPatient(null);
       setButterflyDirectoryPath('');
+      setButterfly2DirectoryPath('');
       setVaveDirectoryPath('');
-      setVave2DirectoryPath('');
       setSelectedDicomIndex(0);
       setCurrentImageIndex(0);
       setOverlay('');
@@ -838,8 +838,8 @@ function App() {
   };
 
   const handleScanDirectory = async () => {
-    if (!butterflyDirectoryPath && !vaveDirectoryPath && !vave2DirectoryPath) {
-      alert("Please enter at least one directory path");
+    if (!butterflyDirectoryPath && !vaveDirectoryPath && !butterfly2DirectoryPath) {
+      alert("Please enter all paths");
       return;
     }
 
@@ -869,7 +869,7 @@ function App() {
       const response = await axios.post(`${API_URL}/scan-directory`, {
         butterfly_directory_path: butterflyDirectoryPath,
         vave_directory_path: vaveDirectoryPath,
-        vave_2_directory_path: vave2DirectoryPath,
+        butterfly_2_directory_path: butterfly2DirectoryPath,
         username: currentUser
       });
 
@@ -1814,6 +1814,17 @@ function App() {
                   />
                 </div>
                 <div className="directory-input">
+                  <label htmlFor="butterfly-2-directory-path">Second Butterfly DICOM Directory Path:</label>
+                  <input
+                    id="butterfly-2-directory-path"
+                    type="text"
+                    value={butterfly2DirectoryPath}
+                    onChange={(e) => setButterfly2DirectoryPath(e.target.value)}
+                    placeholder="e.g., C:\path\to\second\butterfly_DICOM_folder"
+                    className="directory-path-input"
+                  />
+                </div>
+                <div className="directory-input">
                   <label htmlFor="vave-directory-path">Vave DICOM Directory Path:</label>
                   <input
                     id="vave-directory-path"
@@ -1824,21 +1835,10 @@ function App() {
                     className="directory-path-input"
                   />
                 </div>
-                <div className="directory-input">
-                  <label htmlFor="vave-2-directory-path">Second Vave DICOM Directory Path:</label>
-                  <input
-                    id="vave-2-directory-path"
-                    type="text"
-                    value={vave2DirectoryPath}
-                    onChange={(e) => setVave2DirectoryPath(e.target.value)}
-                    placeholder="e.g., C:\path\to\second\vave_DICOM_folder"
-                    className="directory-path-input"
-                  />
-                </div>
                 <button 
                   className="scan-button"
                   onClick={handleScanDirectory}
-                  disabled={loading || (!butterflyDirectoryPath && !vaveDirectoryPath && !vave2DirectoryPath)}
+                  disabled={loading || (!butterflyDirectoryPath && !vaveDirectoryPath && !butterfly2DirectoryPath)}
                 >
                   Scan Directories
                 </button>
