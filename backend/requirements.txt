@@ -9,3 +9,4 @@ python-multipart>=0.0.6
 starlette>=0.27.0
 typing-extensions>=4.8.0
 aiofiles>=23.2.1
+apng>=0.2.1

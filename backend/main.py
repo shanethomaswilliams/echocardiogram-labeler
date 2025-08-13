@@ -13,6 +13,7 @@ from pydicom.encaps import generate_pixel_data_frame
 import tempfile
 import cv2
 import base64
+from apng import APNG
 
 app = FastAPI()
 
@@ -39,11 +40,14 @@ class ScanDirectoryRequest(BaseModel):
     butterfly_2_directory_path: str = ""
     username: str
 
+from typing import Optional
+
 class UpdateRequest(BaseModel):
     patientName: str
     dicomName: str
     label: int
     username: str
+    kind: Optional[str] = "dicom"   # "dicom" or "apng"
 
 class PatientDicomsRequest(BaseModel):
     patientName: str
@@ -163,42 +167,53 @@ def get_or_create_patient_mapping(patients_by_source):
     return mapping
 
 def save_to_csv(patients_data: List[Dict], csv_path: str):
-    """Save patients data to a specific CSV file path"""
-    headers = ["patientName", "originalName", "source", "dicomName", "label", "filepath", "frameCount", "originalPatientName"]
-    
-    # Ensure directory exists if the csv_path includes a directory
+    """
+    Save patients data to CSV. Writes both dicoms and apngs.
+    Adds 'kind' column ('dicom' or 'apng'). Older readers without 'kind'
+    can default to 'dicom'.
+    """
+    headers = [
+        "patientName", "originalName", "source", "dicomName", "label",
+        "filepath", "frameCount", "originalPatientName", "kind"
+    ]
     dirname = os.path.dirname(csv_path)
-    if dirname:  # Only create directories if there's actually a directory part
+    if dirname:
         os.makedirs(dirname, exist_ok=True)
-    
+
     with open(csv_path, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(headers)
         for patient in patients_data:
-            for dicom in patient["dicoms"]:
-                writer.writerow([
-                    patient["patientName"],
-                    patient.get("originalName", ""),
-                    patient.get("source", ""),
-                    dicom["dicomName"],
-                    dicom.get("label", 0),
-                    dicom.get("filepath", ""),
-                    dicom.get("frameCount", 0),
-                    dicom.get("originalPatientName", "")
-                ])
+            # unified writer for both kinds
+            for key, kind in (("dicoms", "dicom"), ("apngs", "apng")):
+                items = patient.get(key, [])
+                if isinstance(items, dict):
+                    items = list(items.values())
+                for item in items:
+                    writer.writerow([
+                        patient["patientName"],
+                        patient.get("originalName", ""),
+                        item.get("source", patient.get("source", "")),
+                        item["dicomName"],
+                        item.get("label", 0),
+                        item.get("filepath", ""),
+                        item.get("frameCount", 0),
+                        item.get("originalPatientName", ""),
+                        kind
+                    ])
     print(f"Data saved to {csv_path}")
 
 def load_from_csv(csv_path: str):
-    """Load patients data from a specific CSV file path"""
     if not os.path.exists(csv_path):
         print(f"CSV file {csv_path} not found")
         return []
+
     patients = {}
     with open(csv_path, 'r', newline='') as csvfile:
         reader = csv.reader(csvfile)
         headers = next(reader)
-        
-        # Determine column indices based on headers
+
+        # Column indices (with fallbacks)
         patient_name_idx = headers.index("patientName") if "patientName" in headers else 0
         dicom_name_idx = headers.index("dicomName") if "dicomName" in headers else 1
         label_idx = headers.index("label") if "label" in headers else 2
@@ -207,45 +222,49 @@ def load_from_csv(csv_path: str):
         source_idx = headers.index("source") if "source" in headers else -1
         original_name_idx = headers.index("originalName") if "originalName" in headers else -1
         original_patient_name_idx = headers.index("originalPatientName") if "originalPatientName" in headers else -1
-        
+        kind_idx = headers.index("kind") if "kind" in headers else -1
+
         for row in reader:
             if len(row) <= max(patient_name_idx, dicom_name_idx, label_idx):
                 print(f"Skipping malformed row: {row}")
                 continue
-            
+
             patient_name = row[patient_name_idx]
             dicom_name = row[dicom_name_idx]
             label_str = row[label_idx]
-            
-            # Get optional fields if they exist
-            filepath = row[filepath_idx] if filepath_idx >= 0 and filepath_idx < len(row) else ""
-            
+
+            filepath = row[filepath_idx] if 0 <= filepath_idx < len(row) else ""
             try:
-                frame_count = int(row[frame_count_idx]) if frame_count_idx >= 0 and frame_count_idx < len(row) and row[frame_count_idx].isdigit() else 0
+                frame_count = int(row[frame_count_idx]) if 0 <= frame_count_idx < len(row) and row[frame_count_idx].isdigit() else 0
             except:
                 frame_count = 0
-                
-            source = row[source_idx] if source_idx >= 0 and source_idx < len(row) else ""
-            original_name = row[original_name_idx] if original_name_idx >= 0 and original_name_idx < len(row) else ""
-            original_patient_name = row[original_patient_name_idx] if original_patient_name_idx >= 0 and original_patient_name_idx < len(row) else ""
-            
+            source = row[source_idx] if 0 <= source_idx < len(row) else ""
+            original_name = row[original_name_idx] if 0 <= original_name_idx < len(row) else ""
+            original_patient_name = row[original_patient_name_idx] if 0 <= original_patient_name_idx < len(row) else ""
+            kind = (row[kind_idx].strip().lower() if 0 <= kind_idx < len(row) and row[kind_idx] else "dicom")
+
             if patient_name not in patients:
                 patients[patient_name] = {
                     "patientName": patient_name,
                     "originalName": original_name,
                     "source": source,
-                    "dicoms": []
+                    "dicoms": [],
+                    "apngs": []
                 }
-                
-            patients[patient_name]["dicoms"].append({
+
+            entry = {
                 "dicomName": dicom_name,
                 "label": int(label_str),
                 "filepath": filepath,
                 "frameCount": frame_count,
                 "source": source,
                 "originalPatientName": original_patient_name
-            })
-            
+            }
+            if kind == "apng":
+                patients[patient_name]["apngs"].append(entry)
+            else:
+                patients[patient_name]["dicoms"].append(entry)
+
     patient_list = list(patients.values())
     print(f"Loaded {len(patient_list)} patients from CSV: {csv_path}")
     return patient_list
@@ -343,12 +362,57 @@ async def scan_directory(request: ScanDirectoryRequest):
     # Create dictionaries for faster lookup
     user_patient_dict = {}
     for patient in user_patients:
-        user_patient_dict[patient["patientName"]] = {"patientName": patient["patientName"], "dicoms": {}}
-        for dicom in patient["dicoms"]:
+        user_patient_dict[patient["patientName"]] = {
+            "patientName": patient["patientName"],
+            "dicoms": {},
+            "apngs": {}
+        }
+        for dicom in patient.get("dicoms", []):
             user_patient_dict[patient["patientName"]]["dicoms"][dicom["dicomName"]] = dicom
+        for apng in patient.get("apngs", []):
+            user_patient_dict[patient["patientName"]]["apngs"][apng["dicomName"]] = apng
     
     # Process both directories and collect patients by source
     patients_by_source = {}
+
+    # Helper function to create apng
+    def is_apng_file(path: str) -> bool:
+        """
+        Fast APNG check: PNG signature + presence of 'acTL' chunk.
+        Falls back to APNG.open() if needed.
+        """
+        try:
+            with open(path, "rb") as f:
+                sig = f.read(8)
+                if sig != b"\x89PNG\r\n\x1a\n":
+                    return False
+                while True:
+                    len_bytes = f.read(4)
+                    if len(len_bytes) < 4:
+                        break
+                    length = int.from_bytes(len_bytes, "big", signed=False)
+                    ctype = f.read(4)
+                    if len(ctype) < 4:
+                        break
+                    if ctype == b"acTL":
+                        return True
+                    # skip data + crc
+                    f.seek(length + 4, os.SEEK_CUR)
+            return False
+        except Exception:
+            # Last resort: try parsing
+            try:
+                APNG.open(path)
+                return True
+            except Exception:
+                return False
+
+    def apng_frame_count(path: str) -> int:
+        try:
+            ap = APNG.open(path)
+            return max(1, len(ap.frames))
+        except Exception:
+            return 1
     
     # Helper function to process a directory
     def process_directory(directory_path, source):
@@ -368,46 +432,65 @@ async def scan_directory(request: ScanDirectoryRequest):
                 original_patient_name = parts[0]
                 filepath = os.path.join(root, file)
                 dicomName = file
-                
+                ext = os.path.splitext(file)[1].lower()
+
                 # Create a unique key combining source and original name
-                # This ensures patients with same name from different sources are treated separately
                 patient_key = f"{source}:{original_patient_name}"
-                
-                print(f"Found potential DICOM: {original_patient_name}/{dicomName} (source: {source})")
-                
+
+                # Ensure structure exists (now with BOTH keys)
                 if patient_key not in patients_by_source:
                     patients_by_source[patient_key] = {
                         "originalName": original_patient_name,
                         "source": source,
-                        "dicoms": {}
+                        "dicoms": {},   # unchanged
+                        "apngs": {}     # NEW
                     }
-                
-                # Check for existing label only in user's CSV
-                # This is trickier now with the mapping - we'll handle it after mapping
-                label = 0
-                
-                frame_count = 0
-                try:
-                    ds = pydicom.dcmread(filepath, stop_before_pixels=True)
-                    if not hasattr(ds, 'SOPClassUID'):
-                        print(f"Not a valid DICOM file: {filepath}")
+
+                # Only look at DICOMs or APNGs
+                # 1) APNG path (accept .apng or .png that truly has acTL)
+                if ext in (".apng", ".png"):
+                    try:
+                        if is_apng_file(filepath):
+                            frame_count = apng_frame_count(filepath)
+                            print(f"Found APNG: {original_patient_name}/{dicomName} (frames={frame_count}, source={source})")
+                            patients_by_source[patient_key]["apngs"][dicomName] = {
+                                "dicomName": dicomName,           # keep same field naming for now
+                                "label": 0,
+                                "filepath": filepath,
+                                "frameCount": frame_count,
+                                "source": source,
+                                "originalPatientName": original_patient_name
+                            }
+                            continue
+                        else:
+                            # It's a plain PNG, and per your request we only include APNGs (skip)
+                            continue
+                    except Exception as e:
+                        print(f"Error checking APNG {filepath}: {e}")
                         continue
-                    frame_count = int(ds.NumberOfFrames) if hasattr(ds, 'NumberOfFrames') else 1
-                    print(f"Estimated {frame_count} frames for DICOM: {filepath}")
-                except Exception as e:
-                    print(f"Error reading {filepath}: {e}")
-                    continue
+                else:
+                # 2) DICOM path (many DICOMs have no extension; try read unless definitely APNG)
+                    try:
+                        ds = pydicom.dcmread(filepath, stop_before_pixels=True)
+                        if not hasattr(ds, 'SOPClassUID'):
+                            # Not a valid DICOM; skip
+                            continue
+                        frame_count = int(ds.NumberOfFrames) if hasattr(ds, 'NumberOfFrames') else 1
+                        print(f"Found DICOM: {original_patient_name}/{dicomName} (frames={frame_count}, source={source})")
+                    except Exception as e:
+                        # Not APNG, not DICOM -> skip
+                        continue
                 
-                # Store with source information
+                # Store DICOM info
                 patients_by_source[patient_key]["dicoms"][dicomName] = {
                     "dicomName": dicomName,
-                    "label": label,
+                    "label": 0,
                     "filepath": filepath,
                     "frameCount": frame_count,
                     "source": source,
-                    "originalPatientName": original_patient_name  # Store original name
+                    "originalPatientName": original_patient_name
                 }
-    
+
     # Process both directories
     if butterfly_path:
         process_directory(butterfly_path, "butterfly")
@@ -434,7 +517,8 @@ async def scan_directory(request: ScanDirectoryRequest):
                     "patientName": new_patient_name,
                     "originalName": original_name,
                     "source": source,
-                    "dicoms": {}
+                    "dicoms": {},
+                    "apngs": {}
                 }
             
             # Add all DICOMs from this source patient
@@ -457,6 +541,19 @@ async def scan_directory(request: ScanDirectoryRequest):
                 # Update the label and add to the new patients dictionary
                 dicom_data["label"] = label
                 patients[new_patient_name]["dicoms"][dicom_name] = dicom_data
+            for apng_name, apng_data in patient_data.get("apngs", {}).items():
+                label = 0
+                original_name = apng_data["originalPatientName"]
+                # If you later add APNG labels, this will pick them up
+                for _, user_patient in user_patient_dict.items():
+                    for user_apng_name, user_apng in user_patient.get("apngs", {}).items():
+                        if (user_apng.get("originalPatientName") == original_name and
+                            user_apng_name == apng_name and
+                            user_apng.get("source") == source):
+                            label = user_apng.get("label", 0)
+                            break
+                apng_data["label"] = label
+                patients[new_patient_name]["apngs"][apng_name] = apng_data
     
     # Convert to list format for the response
     patient_list = []
@@ -465,7 +562,8 @@ async def scan_directory(request: ScanDirectoryRequest):
             "patientName": patient_name,
             "originalName": data.get("originalName", ""),
             "source": data.get("source", ""),
-            "dicoms": list(data["dicoms"].values())
+            "dicoms": list(data["dicoms"].values()),
+            "apngs": list(data.get("apngs", {}).values())   # NEW
         })
 
     # Sort the patient list - now we sort by the new sequential IDs
@@ -484,106 +582,161 @@ async def scan_directory(request: ScanDirectoryRequest):
 
     # Remove source info before sending to frontend
     for patient in patient_list_sorted:
-        for dicom in patient["dicoms"]:
-            if "source" in dicom:
-                del dicom["source"]
+        for dicom in patient.get("dicoms", []):
+            dicom.pop("source", None)
+        for apng in patient.get("apngs", []):
+            apng.pop("source", None)
                 
     print(f"Returning {len(patient_list_sorted)} patients with metadata")
     return {"patients": patient_list_sorted}
 
+def _pil_to_data_uri(pil_img, mime="image/png") -> str:
+    buf = io.BytesIO()
+    pil_img.save(buf, format="PNG")
+    data = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return f"data:{mime};base64,{data}"
+
 @app.post("/fetch-patient-dicoms")
 async def fetch_patient_dicoms(request: PatientDicomsRequest):
-    """Fetch DICOM images for a specific patient using user's CSV"""
+    """
+    Fetch media for a specific patient using the user's CSV.
+    Returns two lists: dicoms[] and apngs[], each item has images[] just like DICOMs.
+    """
     patient_name = request.patientName
     username = request.username
-    
+
     if not username:
         raise HTTPException(status_code=400, detail="Username is required")
-    
-    # Get path for user's CSV
+
     user_csv_path = get_user_csv_path(username)
-    
-    print(f'Fetching DICOMs for patient {patient_name} for user {username}')
-    
-    # Load from user's CSV
+    print(f'Fetching media for patient {patient_name} for user {username}')
+
     csv_patients = load_from_csv(user_csv_path)
-    patient_dicoms = []
-    
+    dicom_items = []
+    apng_items  = []
+
     for patient in csv_patients:
-        if patient["patientName"] == patient_name:
-            for dicom in patient["dicoms"]:
-                dicomName = dicom["dicomName"]
-                filepath = dicom.get("filepath")
-                label = dicom.get("label", 0)
-                
-                if filepath and os.path.exists(filepath):
+        if patient["patientName"] != patient_name:
+            continue
+
+        # ---------- DICOMs (existing logic) ----------
+        for dicom in patient.get("dicoms", []):
+            dicomName = dicom["dicomName"]
+            filepath  = dicom.get("filepath")
+            label     = dicom.get("label", 0)
+
+            if not (filepath and os.path.exists(filepath)):
+                dicom_items.append({"dicomName": dicomName, "label": label, "images": [], "error": "Missing file"})
+                continue
+
+            try:
+                ds = pydicom.dcmread(filepath)
+                images = []
+
+                # Is this a video-encoded DICOM?
+                is_video_dicom = False
+                if hasattr(ds.file_meta, 'TransferSyntaxUID'):
+                    ts_uid = str(ds.file_meta.TransferSyntaxUID)
+                    if ts_uid == '1.2.840.10008.1.2.4.102' or 'MPEG-4' in ds.file_meta.TransferSyntaxUID.name:
+                        is_video_dicom = True
+
+                if is_video_dicom:
+                    print(f"Processing video DICOM: {dicomName}")
                     try:
-                        ds = pydicom.dcmread(filepath)
+                        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=True) as temp_file:
+                            temp_file.write(next(generate_pixel_data_frame(ds.PixelData)))
+                            temp_file.flush()
+
+                            cap = cv2.VideoCapture(temp_file.name)
+                            if cap.isOpened():
+                                frame_count = 0
+                                while True:
+                                    ret, frame = cap.read()
+                                    if not ret:
+                                        break
+                                    image_data = convert_frame_to_base64(frame)  # your existing encoder
+                                    images.append({
+                                        "id": f"{dicomName}-{frame_count+1}",
+                                        "src": image_data
+                                    })
+                                    frame_count += 1
+                                cap.release()
+                            else:
+                                raise Exception("Could not open video from DICOM")
+                    except Exception as video_error:
+                        print(f"Error extracting video frames: {video_error}")
                         images = []
-                        
-                        # Check if this is a video-encoded DICOM (MPEG-4 AVC/H.264)
-                        is_video_dicom = False
-                        if hasattr(ds.file_meta, 'TransferSyntaxUID'):
-                            ts_uid = str(ds.file_meta.TransferSyntaxUID)
-                            if ts_uid == '1.2.840.10008.1.2.4.102' or 'MPEG-4' in ds.file_meta.TransferSyntaxUID.name:
-                                is_video_dicom = True
-                        
-                        if is_video_dicom:
-                            print(f"Processing video DICOM: {dicomName}")
-                            
-                            # Use the video extraction technique
-                            try:
-                                # Extract frames from the video DICOM
-                                with tempfile.NamedTemporaryFile(suffix='.mp4', delete=True) as temp_file:
-                                    # Extract the encapsulated pixel data to the temp file
-                                    temp_file.write(next(generate_pixel_data_frame(ds.PixelData)))
-                                    temp_file.flush()
-                                    
-                                    # Open with OpenCV
-                                    cap = cv2.VideoCapture(temp_file.name)
-                                    
-                                    if cap.isOpened():
-                                        frame_count = 0
-                                        while True:
-                                            ret, frame = cap.read()
-                                            if not ret:
-                                                break
-                                            
-                                            # Convert frame to base64
-                                            image_data = convert_frame_to_base64(frame)
-                                            images.append({
-                                                "id": f"{dicomName}-{frame_count+1}",
-                                                "src": image_data
-                                            })
-                                            
-                                            frame_count += 1
-                                        
-                                        cap.release()
-                                    else:
-                                        raise Exception("Could not open video from DICOM")
-                            except Exception as video_error:
-                                print(f"Error extracting video frames: {video_error}")
-                                images = []
+                else:
+                    # Standard non-video DICOMs
+                    try:
+                        pixel_array = ds.pixel_array
+                        if len(pixel_array.shape) > 2:
+                            frames = [pixel_array[i] for i in range(pixel_array.shape[0])]
                         else:
-                            # Standard approach for non-video DICOMs
-                            try:
-                                pixel_array = ds.pixel_array
-                                frames = [pixel_array[i] for i in range(pixel_array.shape[0])] if len(pixel_array.shape) > 2 else [pixel_array]
-                                images = [{"id": f"{dicomName}-{i+1}", "src": convert_frame_to_base64(frame)} for i, frame in enumerate(frames)]
-                            except Exception as pixel_error:
-                                print(f"Error processing pixel data: {pixel_error}")
-                                images = []
-                        
-                        patient_dicoms.append({"dicomName": dicomName, "label": label, "images": images})
-                    except Exception as e:
-                        print(f"Error reading DICOM: {e}")
-                        patient_dicoms.append({"dicomName": dicomName, "label": label, "images": [], "error": str(e)})
-            break
-    
-    if not patient_dicoms:
-        raise HTTPException(status_code=404, detail=f"No DICOMs found for patient: {patient_name}")
-    
-    return {"patientName": patient_name, "dicoms": patient_dicoms}
+                            frames = [pixel_array]
+                        images = [{"id": f"{dicomName}-{i+1}", "src": convert_frame_to_base64(frame)} for i, frame in enumerate(frames)]
+                    except Exception as pixel_error:
+                        print(f"Error processing pixel data: {pixel_error}")
+                        images = []
+
+                dicom_items.append({"dicomName": dicomName, "label": label, "images": images})
+            except Exception as e:
+                print(f"Error reading DICOM: {e}")
+                dicom_items.append({"dicomName": dicomName, "label": label, "images": [], "error": str(e)})
+
+        # ---------- APNGs (new, frame-by-frame like DICOM) ----------
+        for apng_entry in patient.get("apngs", []):
+            apng_name = apng_entry["dicomName"]  # keeping same field name for consistency
+            filepath  = apng_entry.get("filepath")
+            label     = apng_entry.get("label", 0)
+
+            if not (filepath and os.path.exists(filepath)):
+                apng_items.append({"dicomName": apng_name, "label": label, "images": [], "error": "Missing file"})
+                continue
+
+            try:
+                ap = APNG.open(filepath)
+                images = []
+                idx = 0
+                for png, ctrl in ap.frames:
+                    try:
+                        pil_img = Image.open(io.BytesIO(png.to_bytes()))
+                        if pil_img.mode not in ("RGB", "RGBA", "L"):
+                            pil_img = pil_img.convert("RGBA")
+                        src = _pil_to_data_uri(pil_img, mime="image/png")
+
+                        img_obj = {"id": f"{apng_name}-{idx+1}", "src": src}
+                        # Optional: attach original per-frame delay if available
+                        try:
+                            num = getattr(ctrl, "delay_num", getattr(ctrl, "delay", None))
+                            den = getattr(ctrl, "delay_den", None) or 100
+                            if num is not None:
+                                img_obj["delayMs"] = int(1000 * float(num) / float(den))
+                        except Exception:
+                            pass
+
+                        images.append(img_obj)
+                        idx += 1
+                    except Exception as frame_err:
+                        print(f"Error decoding APNG frame for {apng_name}: {frame_err}")
+                        continue
+
+                apng_items.append({"dicomName": apng_name, "label": label, "images": images})
+            except Exception as e:
+                print(f"Error reading APNG {filepath}: {e}")
+                apng_items.append({"dicomName": apng_name, "label": label, "images": [], "error": str(e)})
+
+        break  # found the patient we wanted
+
+    if not dicom_items and not apng_items:
+        raise HTTPException(status_code=404, detail=f"No DICOMs or APNGs found for patient: {patient_name}")
+
+    # Return them in separate arrays to avoid index/shape confusion on the frontend
+    return {
+        "patientName": patient_name,
+        "dicoms": dicom_items,
+        "apngs": apng_items
+    }
 
 @app.get("/fetch-csv")
 async def fetch_csv(username: str = None):

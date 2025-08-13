@@ -10,6 +10,14 @@ import './App.css';
 
 const API_URL = 'http://localhost:8000';
 
+
+const normalizePatients = (patients) =>
+  patients.map((p) => {
+    const dicoms = Array.isArray(p.dicoms) ? p.dicoms.map(d => ({ ...d, kind: d.kind || 'dicom' })) : [];
+    const apngs  = Array.isArray(p.apngs)  ? p.apngs.map(a => ({ ...a, kind: 'apng' })) : [];
+    return { ...p, dicoms: [...dicoms, ...apngs] };
+  });
+
 class DicomQueueManager {
   constructor(apiResponse) {
     this.unlabeledQueue = [];
@@ -249,6 +257,13 @@ const DicomSlider = ({ dicom, currentImageIndex, setCurrentImageIndex, buttonsDi
   const playIntervalRef = useRef(null);
   const lastTimeRef = useRef(0);
 
+  const getFrameDelayMs = () => {
+    if (!dicom?.images?.length) return 80;
+    const img = dicom.images[currentImageIndex];
+    const d = img?.delayMs;
+    return (typeof d === 'number' && d > 0 && d < 10000) ? d : 80; // default 80ms
+  };
+
   const sliderValue =
     dicom?.images?.length > 1
       ? (currentImageIndex / (dicom.images.length - 1)) * 100
@@ -270,11 +285,12 @@ const DicomSlider = ({ dicom, currentImageIndex, setCurrentImageIndex, buttonsDi
       cancelAnimationFrame(playIntervalRef.current);
     }
 
-    const frameTime = 80; // milliseconds per frame
+    let frameTime = getFrameDelayMs(); // per-frame timing when present
     const advanceFrame = (timestamp) => {
       if (!isPlaying) return;
 
       const elapsed = timestamp - lastTimeRef.current;
+      frameTime = getFrameDelayMs();
       if (elapsed > frameTime) {
         lastTimeRef.current = timestamp;
         setCurrentImageIndex((prevIndex) => {
@@ -520,18 +536,7 @@ function App() {
       const response = await axios.get(`${API_URL}/fetch-csv?username=${username}`);
       
       if (response.data?.patients?.length > 0) {
-        // Store only the metadata without images
-        const patientsMetadata = response.data.patients.map(patient => ({
-          ...patient,
-          dicoms: patient.dicoms.map(dicom => {
-            // Keep dicom metadata but remove any image data
-            const dicomMeta = { ...dicom };
-            delete dicomMeta.images;
-            return dicomMeta;
-          })
-        }));
-        
-        setPatientsList(patientsMetadata);
+        setPatientsList(normalizePatients(response.data.patients));
       }
     } catch (error) {
       console.error("Error loading user data:", error);
@@ -881,7 +886,7 @@ function App() {
       setScanProgress(100);
 
       if (response.data && response.data.patients) {
-        setPatientsList(response.data.patients);
+        setPatientsList(normalizePatients(response.data.patients));
       } else {
         throw new Error("Folder structure invalid or no DICOMs found.");
       }
@@ -1000,18 +1005,7 @@ function App() {
         const response = await axios.get(`${API_URL}/fetch-csv?username=${currentUser}`);
         
         if (response.data?.patients?.length > 0) {
-          // Store only the metadata without images
-          const patientsMetadata = response.data.patients.map(patient => ({
-            ...patient,
-            dicoms: patient.dicoms.map(dicom => {
-              // Keep dicom metadata but remove any image data
-              const dicomMeta = { ...dicom };
-              delete dicomMeta.images;
-              return dicomMeta;
-            })
-          }));
-          
-          setPatientsList(patientsMetadata);
+          setPatientsList(normalizePatients(response.data.patients));
         }
       } catch (error) {
         console.error("Error loading initial data:", error);
@@ -1047,16 +1041,19 @@ function App() {
         // Get patient metadata
         const patientMeta = patientsList[patientIndex];
         
-        // Create a new patient object with the fetched DICOM images
+        const byName = new Map();
+        (response.data.dicoms || []).forEach(item => byName.set(item.dicomName, item));
+        (response.data.apngs  || []).forEach(item => byName.set(item.dicomName, item));
+      
         const fullPatient = {
           ...patientMeta,
           dicoms: patientMeta.dicoms.map(dicom => {
-            const fetchedDicom = response.data.dicoms.find(d => d.dicomName === dicom.dicomName);
-            
-            if (fetchedDicom && fetchedDicom.images) {
-              return { ...dicom, images: fetchedDicom.images };
+            const fetched = byName.get(dicom.dicomName);
+            if (fetched && Array.isArray(fetched.images)) {
+              return { ...dicom, images: fetched.images };
             }
-            return dicom;
+            // Ensure images is at least an empty array so UI doesn't explode
+            return { ...dicom, images: [] };
           })
         };
         
@@ -1730,23 +1727,18 @@ function App() {
     }
   }, [patientsList, isComplete, showCompletionModal]);
 
-  const exportCSV = async () => {
+  const exportCSV = async (goToLoginAfter = false) => {
     if (!currentUser) return;
     
     try {
       setApiStatus({ loading: true, error: null });
       
       const response = await axios.get(`${API_URL}/fetch-csv?username=${currentUser}`);
-      
-      if (!response.data) {
-        throw new Error("Invalid response from server");
-      }
+      if (!response.data) throw new Error("Invalid response from server");
       
       let csvContent = "data:text/csv;charset=utf-8,";
       csvContent += "PatientName,DicomName,Label\r\n";
-      
       const patientsData = response.data.patients || [];
-      
       patientsData.forEach(patient => {
         patient.dicoms.forEach(dicom => {
           csvContent += [patient.patientName, dicom.dicomName, dicom.label || 0].join(",") + "\r\n";
@@ -1762,6 +1754,14 @@ function App() {
       document.body.removeChild(link);
       
       setApiStatus({ loading: false, error: null });
+  
+      // If we finished all labels and clicked "Download", go back to login.
+      // Also supports explicit flag from the completion modal.
+      if (goToLoginAfter || isComplete) {
+        setTimeout(() => {
+          handleLogout(); // this shows the LoginScreen
+        }, 400); // small delay ensures the browser starts the download cleanly
+      }
     } catch (error) {
       console.error("Error exporting CSV:", error);
       setApiStatus({ loading: false, error: "Failed to export CSV. Please try again." });
@@ -1926,7 +1926,7 @@ function App() {
             <div>
               <button 
                 className="download-button" 
-                onClick={exportCSV} 
+                onClick={() => exportCSV(false)} 
                 disabled={apiStatus.loading || getTotalDicomCount() === 0}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2108,7 +2108,7 @@ function App() {
             // Simply close the modal - don't change other state
             setShowCompletionModal(false);
           }}
-          onExport={exportCSV}
+          onExport={() => exportCSV(true)}
           loading={apiStatus.loading}
         />
       )}
