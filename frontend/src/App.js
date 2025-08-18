@@ -770,7 +770,7 @@ function App() {
     if (!currentUser) return;
     
     // Confirm before proceeding with stronger warning
-    if (!window.confirm("WARNING: This will remove all DICOM data and all user data from the application. Are you sure you want to do this?")) {
+    if (!window.confirm("WARNING: This will remove all DICOM/APNG data and all user data from the application. Are you sure you want to do this?")) {
       return;
     }
     
@@ -1239,7 +1239,7 @@ function App() {
     return (
       <CustomDropdown
         key={`dicom-dropdown-${dropdownRenderKey}`} // Add key here
-        label="DICOM"
+        label="DICOM / APNG"
         options={freshDicomOptions}
         value={selectedDicomIndex}
         onChange={handleDicomChange}
@@ -1803,35 +1803,35 @@ function App() {
                   </svg>
                 </div>
                 <div className="directory-input">
-                  <label htmlFor="butterfly-directory-path">Butterfly DICOM Directory Path:</label>
+                  <label htmlFor="butterfly-directory-path">Butterfly IQ+ DICOM Directory Path:</label>
                   <input
                     id="butterfly-directory-path"
                     type="text"
                     value={butterflyDirectoryPath}
                     onChange={(e) => setButterflyDirectoryPath(e.target.value)}
-                    placeholder="e.g., C:\path\to\butterfly_DICOM_folder"
+                    placeholder="e.g., C:\path\to\IQ+\butterfly_folder"
                     className="directory-path-input"
                   />
                 </div>
                 <div className="directory-input">
-                  <label htmlFor="butterfly-2-directory-path">Second Butterfly DICOM Directory Path:</label>
+                  <label htmlFor="butterfly-2-directory-path">Butterfly IQ3 DICOM Directory Path:</label>
                   <input
                     id="butterfly-2-directory-path"
                     type="text"
                     value={butterfly2DirectoryPath}
                     onChange={(e) => setButterfly2DirectoryPath(e.target.value)}
-                    placeholder="e.g., C:\path\to\second\butterfly_DICOM_folder"
+                    placeholder="e.g., C:\path\to\IQ3\butterfly_folder"
                     className="directory-path-input"
                   />
                 </div>
                 <div className="directory-input">
-                  <label htmlFor="vave-directory-path">Vave DICOM Directory Path:</label>
+                  <label htmlFor="vave-directory-path">Vave APNG Directory Path:</label>
                   <input
                     id="vave-directory-path"
                     type="text"
                     value={vaveDirectoryPath}
                     onChange={(e) => setVaveDirectoryPath(e.target.value)}
-                    placeholder="e.g., C:\path\to\vave_DICOM_folder"
+                    placeholder="e.g., C:\path\to\vave_folder"
                     className="directory-path-input"
                   />
                 </div>
@@ -1843,7 +1843,7 @@ function App() {
                   Scan Directories
                 </button>
                 <p className="upload-hint">
-                  Enter the absolute paths to the folders containing patient folders and DICOM files.
+                  Enter the absolute paths to the folders containing patient folders and DICOM/APNG files.
                   At least one path is required.
                 </p>
                 <p className="upload-info">
@@ -1938,7 +1938,7 @@ function App() {
               </button>
               <div className="counter">
                 <div className="counter-badge">{unlabeledRemaining}</div>
-                <span>DICOMs Remaining</span>
+                <span>DICOM / APNGs Remaining</span>
               </div>
             </div>
           )}
@@ -2002,7 +2002,7 @@ function App() {
                   <path d="M21 22v-6h-6"></path>
                   <path d="M3 12a9 9 0 0 0 17.14 3.86L21 10"></path>
                 </svg>
-                Delete All DICOMS
+                Delete All Patient Info
               </button>
             </div>
           </div>
@@ -2010,10 +2010,10 @@ function App() {
           <div className="sidebar-section keyboard-hint">
             <h3>Keyboard Shortcuts</h3>
             <ul>
-              <li>Keys <kbd>1</kbd>-<kbd>5</kbd>: Label current DICOM</li>
+              <li>Keys <kbd>1</kbd>-<kbd>5</kbd>: Label current DICOM/APNG</li>
               <li><kbd>Backspace</kbd>: Undo last label</li>
-              <li><kbd>←</kbd>/<kbd>→</kbd>: Navigate between DICOMs</li>
-              <li><kbd>Space</kbd>: Play/pause DICOM playback</li>
+              <li><kbd>←</kbd>/<kbd>→</kbd>: Navigate between DICOM/APNGs</li>
+              <li><kbd>Space</kbd>: Play/pause DICOM/APNG playback</li>
             </ul>
           </div>
         </div>
@@ -2046,7 +2046,7 @@ function App() {
                   <span className="metadata-value">{currentPatient.patientName}</span>
                 </div>
                 <div className="metadata-item">
-                  <span className="metadata-label">DICOM:</span>
+                  <span className="metadata-label">DICOM/APNG:</span>
                   <span className="metadata-value">{currentDicom.dicomName}</span>
                 </div>
                 {currentDicom.images && (
